@@ -34,6 +34,8 @@ export async function storeObjectiveResult(
     scores.details.listening = result;
   }
 
+  updateTestObjectiveResultByUrl(scores, result);
+
   // Recalculate overall band
   scores.overall = calculateOverallBand(
     scores.listening,
@@ -52,7 +54,10 @@ export async function storeObjectiveResult(
 /**
  * Store AI writing score
  */
-export async function storeWritingScore(score: AiIeltsScore): Promise<void> {
+export async function storeWritingScore(
+  score: AiIeltsScore,
+  url?: string,
+): Promise<void> {
   console.log(`${LOG_PREFIX} Storing writing score`);
 
   const scores = await getStoredScores();
@@ -61,6 +66,7 @@ export async function storeWritingScore(score: AiIeltsScore): Promise<void> {
   scores.sources.writing = "ai";
   scores.details = scores.details || {};
   scores.details.writing = score;
+  if (url) cacheAiScore(scores, "writing", url, score);
 
   // Recalculate overall band
   scores.overall = calculateOverallBand(
@@ -77,7 +83,10 @@ export async function storeWritingScore(score: AiIeltsScore): Promise<void> {
 /**
  * Store AI speaking score
  */
-export async function storeSpeakingScore(score: AiIeltsScore): Promise<void> {
+export async function storeSpeakingScore(
+  score: AiIeltsScore,
+  url?: string,
+): Promise<void> {
   console.log(`${LOG_PREFIX} Storing speaking score`);
 
   const scores = await getStoredScores();
@@ -86,6 +95,7 @@ export async function storeSpeakingScore(score: AiIeltsScore): Promise<void> {
   scores.sources.speaking = "ai";
   scores.details = scores.details || {};
   scores.details.speaking = score;
+  if (url) cacheAiScore(scores, "speaking", url, score);
 
   // Recalculate overall band
   scores.overall = calculateOverallBand(
@@ -171,6 +181,8 @@ export async function storeHistoryTests(
       reviewUrls: { ...test.reviewUrls, ...previous?.reviewUrls },
       sources: { ...test.sources, ...previous?.sources },
       status: { ...test.status, ...previous?.status },
+      aiDetails: previous?.aiDetails,
+      objectiveDetails: previous?.objectiveDetails,
     };
     merged.overall = calculateOverallBand(
       merged.listening,
@@ -207,6 +219,10 @@ export async function updateTestSkillScore(
   test.sources[skill] = "ai";
   test.status = test.status || {};
   test.status[skill] = "scored";
+  test.aiDetails = test.aiDetails || {};
+  test.aiDetails[skill] = score;
+  if (test.reviewUrls[skill])
+    cacheAiScore(scores, skill, test.reviewUrls[skill], score);
   test.overall = calculateOverallBand(
     test.listening,
     test.reading,
@@ -215,6 +231,32 @@ export async function updateTestSkillScore(
   );
 
   await saveScores({ ...scores, tests });
+}
+
+export async function clearTestAiSkillScore(
+  testId: string,
+  skill: Extract<ResultType, "writing" | "speaking">,
+): Promise<IeltsTestScoreRow | undefined> {
+  const scores = await getStoredScores();
+  const tests = scores.tests || [];
+  const test = tests.find((item) => item.id === testId);
+  if (!test) return undefined;
+
+  delete test[skill];
+  delete test.aiDetails?.[skill];
+  if (test.reviewUrls[skill]) {
+    delete scores.aiScoreCache?.[skill]?.[normalizeUrl(test.reviewUrls[skill])];
+  }
+  test.status = test.status || {};
+  test.status[skill] = "pending";
+  test.overall = calculateOverallBand(
+    test.listening,
+    test.reading,
+    test.writing,
+    test.speaking,
+  );
+  await saveScores({ ...scores, tests });
+  return test;
 }
 
 export async function updateTestSkillStatus(
@@ -238,6 +280,25 @@ export async function getCombinedScore(): Promise<CombinedIeltsScore> {
   return await getStoredScores();
 }
 
+export async function getCachedScoreByUrl(
+  skill: Extract<ResultType, "writing" | "speaking">,
+  url: string,
+): Promise<AiIeltsScore | undefined> {
+  const scores = await getStoredScores();
+  return scores.aiScoreCache?.[skill]?.[normalizeUrl(url)];
+}
+
+export async function getCachedObjectiveResultByUrl(
+  skill: Extract<ResultType, "reading" | "listening">,
+  url: string,
+): Promise<ObjectiveResult | undefined> {
+  const scores = await getStoredScores();
+  const normalizedUrl = normalizeUrl(url);
+  return scores.tests?.find(
+    (test) => normalizeUrl(test.reviewUrls[skill] || "") === normalizedUrl,
+  )?.objectiveDetails?.[skill];
+}
+
 /**
  * Get stored scores from chrome.storage.local
  */
@@ -251,6 +312,51 @@ async function getStoredScores(): Promise<CombinedIeltsScore> {
       resolve(result[STORAGE_KEY] || defaultScores);
     });
   });
+}
+
+function updateTestObjectiveResultByUrl(
+  scores: CombinedIeltsScore,
+  result: ObjectiveResult,
+): void {
+  const tests = scores.tests || [];
+  const normalizedUrl = normalizeUrl(result.url);
+  const test = tests.find(
+    (item) =>
+      normalizeUrl(item.reviewUrls[result.resultType] || "") === normalizedUrl,
+  );
+  if (!test) return;
+
+  test[result.resultType] = result.platformBand;
+  test.sources[result.resultType] = "platform";
+  test.status = test.status || {};
+  test.status[result.resultType] = "scored";
+  test.objectiveDetails = test.objectiveDetails || {};
+  test.objectiveDetails[result.resultType] = result;
+  test.overall = calculateOverallBand(
+    test.listening,
+    test.reading,
+    test.writing,
+    test.speaking,
+  );
+}
+
+function cacheAiScore(
+  scores: CombinedIeltsScore,
+  skill: Extract<ResultType, "writing" | "speaking">,
+  url: string,
+  score: AiIeltsScore,
+): void {
+  scores.aiScoreCache = scores.aiScoreCache || {};
+  scores.aiScoreCache[skill] = scores.aiScoreCache[skill] || {};
+  scores.aiScoreCache[skill][normalizeUrl(url)] = score;
+}
+
+function normalizeUrl(url: string): string {
+  try {
+    return new URL(url).href.replace(/\/$/, "");
+  } catch {
+    return url.replace(/\/$/, "");
+  }
 }
 
 /**

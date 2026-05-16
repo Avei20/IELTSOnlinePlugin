@@ -15,6 +15,7 @@ const feedbackSection = document.getElementById(
 ) as HTMLDivElement;
 const refreshBtn = document.getElementById("refreshBtn") as HTMLButtonElement;
 const clearBtn = document.getElementById("clearBtn") as HTMLButtonElement;
+let currentScores: any = null;
 
 // Initialize popup
 document.addEventListener("DOMContentLoaded", () => {
@@ -74,6 +75,7 @@ async function loadScores() {
     }
 
     console.log(`${LOG_PREFIX} Scores loaded:`, response);
+    currentScores = response;
     displayScores(response);
   });
 }
@@ -84,7 +86,7 @@ async function loadScores() {
 function displayScores(scores: any) {
   if (Array.isArray(scores.tests) && scores.tests.length > 0) {
     displayScoreTable(scores.tests);
-    displayFeedback(scores.details);
+    displayFeedbackForTest(scores.tests[0]);
     return;
   }
 
@@ -159,40 +161,74 @@ function displayScores(scores: any) {
   scoresContainer.innerHTML = html;
 
   // Display feedback if available
-  displayFeedback(scores.details);
+  displayFeedback(scores.details, scores.tests);
 }
 
 function displayScoreTable(tests: any[]) {
   scoresContainer.innerHTML = `
-    <table class="scores-table">
-      <thead>
-        <tr>
-          <th>Test Name</th>
-          <th>Listening</th>
-          <th>Reading</th>
-          <th>Writing</th>
-          <th>Speaking</th>
-          <th>IELTS Result</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${tests.map(renderTestRow).join("")}
-      </tbody>
-    </table>
+    <div class="table-wrap">
+      <table class="scores-table">
+        <thead>
+          <tr>
+            <th>Test</th>
+            <th>L</th>
+            <th>R</th>
+            <th>W</th>
+            <th>S</th>
+            <th>Overall</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${tests.map(renderTestRow).join("")}
+        </tbody>
+      </table>
+    </div>
+    <div class="table-hint">Click a row to view feedback. Use ↻ to rescore AI skills.</div>
   `;
+
+  scoresContainer
+    .querySelectorAll<HTMLButtonElement>(".rescore-btn")
+    .forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        requestRescore(
+          button.dataset.testId || "",
+          button.dataset.skill as "writing" | "speaking",
+        );
+      });
+    });
+
+  scoresContainer
+    .querySelectorAll<HTMLTableRowElement>("tbody tr")
+    .forEach((row) => {
+      row.addEventListener("click", () => {
+        scoresContainer
+          .querySelectorAll("tbody tr")
+          .forEach((item) => item.classList.remove("selected"));
+        row.classList.add("selected");
+        displayFeedbackForTest(
+          tests.find((test) => test.id === row.dataset.testId),
+        );
+      });
+    });
 }
 
 function renderTestRow(test: any): string {
   return `
-    <tr>
-      <td>${escapeHtml(test.testName)}<div class="muted">${escapeHtml(test.date || "")}</div></td>
+    <tr data-test-id="${escapeHtml(test.id)}">
+      <td class="test-name-cell"><div class="test-name" title="${escapeHtml(test.testName)}">${escapeHtml(test.testName)}</div><div class="muted">${escapeHtml(test.date || "")}</div></td>
       <td>${renderBand(test.listening, test.status?.listening)}</td>
       <td>${renderBand(test.reading, test.status?.reading)}</td>
-      <td>${renderBand(test.writing, test.status?.writing)}</td>
-      <td>${renderBand(test.speaking, test.status?.speaking)}</td>
+      <td>${renderBand(test.writing, test.status?.writing)}${renderRescoreButton(test, "writing")}</td>
+      <td>${renderBand(test.speaking, test.status?.speaking)}${renderRescoreButton(test, "speaking")}</td>
       <td>${renderBand(test.overall)}</td>
     </tr>
   `;
+}
+
+function renderRescoreButton(test: any, skill: "writing" | "speaking"): string {
+  if (!test.reviewUrls?.[skill]) return "";
+  return `<button class="rescore-btn" data-test-id="${escapeHtml(test.id)}" data-skill="${skill}" title="Rescore ${skill}">↻</button>`;
 }
 
 function renderBand(value?: number, status?: string): string {
@@ -221,13 +257,64 @@ function escapeHtml(value: string): string {
 /**
  * Display feedback from AI scoring
  */
-function displayFeedback(details: any) {
-  if (!details) {
+function requestRescore(testId: string, skill: "writing" | "speaking") {
+  if (!testId || !skill) return;
+  chrome.runtime.sendMessage(
+    { type: "RESCORE_TEST_SKILL", payload: { testId, skill } },
+    (response) => {
+      if (chrome.runtime.lastError || !response?.success) {
+        console.error(
+          `${LOG_PREFIX} Rescore failed:`,
+          chrome.runtime.lastError || response,
+        );
+        return;
+      }
+      loadScores();
+    },
+  );
+}
+
+function displayFeedbackForTest(test: any) {
+  if (!test) {
     feedbackSection.classList.add("hidden");
     return;
   }
 
-  // Collect all feedback from writing and speaking
+  const sessions = collectFeedbackSessions(null, [test]);
+  if (sessions.length === 0) {
+    feedbackSection.classList.remove("hidden");
+    feedbackSection.innerHTML = `
+      <div class="section-title">Feedback</div>
+      <div class="no-data">No feedback available for this test yet. Open the result pages or use AI rescore for Writing/Speaking.</div>
+    `;
+    return;
+  }
+
+  feedbackSection.classList.remove("hidden");
+  feedbackSection.innerHTML = `
+    <div class="section-title">${escapeHtml(test.testName || "Test Feedback")}</div>
+    ${sessions.map(renderFeedbackSession).join("")}
+  `;
+}
+
+function displayFeedback(details: any, tests: any[] = []) {
+  const sessions = collectFeedbackSessions(details, tests);
+
+  if (!details && sessions.length === 0) {
+    feedbackSection.classList.add("hidden");
+    return;
+  }
+
+  if (sessions.length > 0) {
+    feedbackSection.classList.remove("hidden");
+    feedbackSection.innerHTML = `
+      <div class="section-title">Feedback & Action Plan</div>
+      ${sessions.map(renderFeedbackSession).join("")}
+    `;
+    return;
+  }
+
+  // Collect all feedback from legacy top-level writing and speaking details
   const allStrengths: string[] = [];
   const allWeaknesses: string[] = [];
   const allCorrections: string[] = [];
@@ -282,8 +369,9 @@ function displayFeedbackList(
   listId: string,
   items: string[],
 ) {
-  const section = document.getElementById(sectionId) as HTMLDivElement;
-  const list = document.getElementById(listId) as HTMLUListElement;
+  const section = document.getElementById(sectionId) as HTMLDivElement | null;
+  const list = document.getElementById(listId) as HTMLUListElement | null;
+  if (!section || !list) return;
 
   if (items.length === 0) {
     section.style.display = "none";
@@ -291,7 +379,116 @@ function displayFeedbackList(
   }
 
   section.style.display = "block";
-  list.innerHTML = items.map((item) => `<li>${item}</li>`).join("");
+  list.innerHTML = items.map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+}
+
+function collectFeedbackSessions(details: any, tests: any[]) {
+  const sessions: Array<{
+    title: string;
+    skill: "Listening" | "Reading" | "Writing" | "Speaking";
+    band?: number;
+    score: any;
+  }> = [];
+
+  for (const test of tests || []) {
+    for (const skill of ["listening", "reading"] as const) {
+      const score = test.objectiveDetails?.[skill]?.aiFeedback;
+      if (!hasScoreFeedback(score)) continue;
+      sessions.push({
+        title: test.testName || "IELTS test",
+        skill: skill === "listening" ? "Listening" : "Reading",
+        band: test[skill],
+        score,
+      });
+    }
+
+    for (const skill of ["writing", "speaking"] as const) {
+      const score = test.aiDetails?.[skill];
+      if (!hasScoreFeedback(score)) continue;
+      sessions.push({
+        title: test.testName || "IELTS test",
+        skill: skill === "writing" ? "Writing" : "Speaking",
+        band: test[skill],
+        score,
+      });
+    }
+  }
+
+  if (sessions.length === 0) {
+    for (const skill of ["listening", "reading"] as const) {
+      const detail = details?.[skill];
+      const score = detail?.aiFeedback;
+      if (!hasScoreFeedback(score)) continue;
+      sessions.push({
+        title: "Latest result",
+        skill: skill === "listening" ? "Listening" : "Reading",
+        band: detail.platformBand,
+        score,
+      });
+    }
+
+    for (const skill of ["writing", "speaking"] as const) {
+      const score = details?.[skill];
+      if (!hasScoreFeedback(score)) continue;
+      sessions.push({
+        title: "Latest result",
+        skill: skill === "writing" ? "Writing" : "Speaking",
+        band: score.overallBand,
+        score,
+      });
+    }
+  }
+
+  return sessions;
+}
+
+function hasScoreFeedback(score: any): boolean {
+  return Boolean(
+    score &&
+    ((score.strengths || []).length > 0 ||
+      (score.weaknesses || []).length > 0 ||
+      (score.corrections || []).length > 0 ||
+      (score.actionPlan || []).length > 0),
+  );
+}
+
+function renderFeedbackSession(session: {
+  title: string;
+  skill: "Listening" | "Reading" | "Writing" | "Speaking";
+  band?: number;
+  score: any;
+}): string {
+  const band =
+    typeof session.band === "number"
+      ? ` · Band ${session.band.toFixed(1)}`
+      : "";
+  return `
+    <div class="feedback-session">
+      <h4 style="font-size: 13px; color: #333; margin: 12px 0 6px">
+        ${escapeHtml(session.title)} · ${session.skill}${band}
+      </h4>
+      ${renderFeedbackGroup("✓ Strengths", session.score.strengths, "#4caf50")}
+      ${renderFeedbackGroup("✗ Weaknesses", session.score.weaknesses, "#f44336")}
+      ${renderFeedbackGroup("✎ Corrections", session.score.corrections, "#ff9800")}
+      ${renderFeedbackGroup("→ Action Plan", session.score.actionPlan, "#2196f3")}
+    </div>
+  `;
+}
+
+function renderFeedbackGroup(
+  title: string,
+  items: string[] = [],
+  color: string,
+): string {
+  if (items.length === 0) return "";
+  return `
+    <div class="feedback-section">
+      <h4 style="font-size: 13px; color: ${color}; margin-bottom: 8px">${title}</h4>
+      <ul class="feedback-list">
+        ${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
+      </ul>
+    </div>
+  `;
 }
 
 /**

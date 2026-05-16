@@ -32,12 +32,22 @@ export interface SpeakingPart {
   audioUrl?: string;
 }
 
+export interface ConstructiveFeedback {
+  strengths: string[];
+  weaknesses: string[];
+  corrections: string[];
+  actionPlan: string[];
+  confidence: number;
+}
+
 export interface ObjectiveResult {
   url: string;
   title: string;
   resultType: "reading" | "listening";
   platformBand: number;
   rawScore?: string;
+  platformFeedback?: string;
+  aiFeedback?: ConstructiveFeedback;
 }
 
 // Writing criteria bands
@@ -94,6 +104,12 @@ export interface IeltsTestScoreRow {
       "pending" | "scoring" | "scored" | "error" | "unavailable"
     >
   >;
+  aiDetails?: Partial<
+    Record<Extract<ResultType, "writing" | "speaking">, AiIeltsScore>
+  >;
+  objectiveDetails?: Partial<
+    Record<Extract<ResultType, "reading" | "listening">, ObjectiveResult>
+  >;
 }
 
 export interface CombinedIeltsScore {
@@ -115,6 +131,12 @@ export interface CombinedIeltsScore {
     writing?: AiIeltsScore;
     speaking?: AiIeltsScore;
   };
+  aiScoreCache?: Partial<
+    Record<
+      Extract<ResultType, "writing" | "speaking">,
+      Record<string, AiIeltsScore>
+    >
+  >;
 }
 
 // Message types for chrome.runtime.sendMessage
@@ -126,7 +148,8 @@ export type MessageType =
   | "HISTORY_TESTS_SCRAPED"
   | "SCORE_WRITING"
   | "SCORE_SPEAKING"
-  | "GET_COMBINED_SCORE";
+  | "GET_COMBINED_SCORE"
+  | "RESCORE_TEST_SKILL";
 
 export interface Message {
   type: MessageType;

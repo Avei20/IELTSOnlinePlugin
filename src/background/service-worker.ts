@@ -6,7 +6,11 @@ import {
   ObjectiveResult,
   IeltsTestScoreRow,
 } from "../shared/types";
-import { scoreWriting, scoreSpeaking } from "./geminiScorer";
+import {
+  scoreWriting,
+  scoreSpeaking,
+  createObjectiveFeedback,
+} from "./geminiScorer";
 import {
   storeObjectiveResult,
   storeWritingScore,
@@ -16,6 +20,9 @@ import {
   updateTestSkillScore,
   updateTestSkillStatus,
   getCombinedScore,
+  getCachedScoreByUrl,
+  getCachedObjectiveResultByUrl,
+  clearTestAiSkillScore,
 } from "./scoreCombiner";
 
 const LOG_PREFIX = "[IELTSPlugin]";
@@ -68,6 +75,9 @@ async function handleMessage(
       case "GET_COMBINED_SCORE":
         return await getCombinedScore();
 
+      case "RESCORE_TEST_SKILL":
+        return await handleRescoreTestSkill(message.payload);
+
       default:
         console.warn(`${LOG_PREFIX} Unknown message type:`, message.type);
         return { success: false, error: "Unknown message type" };
@@ -88,10 +98,25 @@ async function handleWritingResult(
   console.log(`${LOG_PREFIX} Processing writing result from ${result.url}`);
 
   try {
-    // Score with Gemini
-    const score = await scoreWriting(result);
-
     const test = await findTestByReviewUrl(result.url, "writing");
+    const cachedScore =
+      getCachedAiScore(test, "writing") ||
+      (await getCachedScoreByUrl("writing", result.url));
+    if (cachedScore) {
+      console.log(`${LOG_PREFIX} Using cached writing AI score`, {
+        url: result.url,
+        band: cachedScore.overallBand,
+      });
+      closeBatchTab(sender);
+      return { success: true, score: cachedScore, cached: true };
+    }
+
+    console.log(`${LOG_PREFIX} No cached writing AI score; calling Gemini`, {
+      url: result.url,
+      task1AnswerLength: result.task1Answer.length,
+      task2AnswerLength: result.task2Answer.length,
+    });
+    const score = await scoreWriting(result);
     if (!score) {
       if (test) await updateTestSkillStatus(test.id, "writing", "error");
       closeBatchTab(sender);
@@ -100,7 +125,7 @@ async function handleWritingResult(
     if (test) {
       await updateTestSkillScore(test.id, "writing", score);
     } else {
-      await storeWritingScore(score);
+      await storeWritingScore(score, result.url);
     }
     closeBatchTab(sender);
 
@@ -121,10 +146,28 @@ async function handleSpeakingResult(
   console.log(`${LOG_PREFIX} Processing speaking result from ${result.url}`);
 
   try {
-    // Score with Gemini
-    const score = await scoreSpeaking(result);
-
     const test = await findTestByReviewUrl(result.url, "speaking");
+    const cachedScore =
+      getCachedAiScore(test, "speaking") ||
+      (await getCachedScoreByUrl("speaking", result.url));
+    if (cachedScore) {
+      console.log(`${LOG_PREFIX} Using cached speaking AI score`, {
+        url: result.url,
+        band: cachedScore.overallBand,
+      });
+      closeBatchTab(sender);
+      return { success: true, score: cachedScore, cached: true };
+    }
+
+    console.log(`${LOG_PREFIX} No cached speaking AI score; calling Gemini`, {
+      url: result.url,
+      parts: result.parts.length,
+      transcriptLength: result.parts.reduce(
+        (total, part) => total + (part.transcript?.length || 0),
+        0,
+      ),
+    });
+    const score = await scoreSpeaking(result);
     if (!score) {
       if (test) await updateTestSkillStatus(test.id, "speaking", "error");
       closeBatchTab(sender);
@@ -133,7 +176,7 @@ async function handleSpeakingResult(
     if (test) {
       await updateTestSkillScore(test.id, "speaking", score);
     } else {
-      await storeSpeakingScore(score);
+      await storeSpeakingScore(score, result.url);
     }
     closeBatchTab(sender);
 
@@ -153,7 +196,25 @@ async function handleObjectiveResult(result: ObjectiveResult): Promise<any> {
   );
 
   try {
-    // Store the platform score
+    const cached = await getCachedObjectiveResultByUrl(
+      result.resultType,
+      result.url,
+    );
+    if (cached?.aiFeedback) {
+      console.log(`${LOG_PREFIX} Using cached objective AI feedback`, {
+        type: result.resultType,
+        url: result.url,
+      });
+      result.aiFeedback = cached.aiFeedback;
+    } else if (result.platformFeedback) {
+      console.log(`${LOG_PREFIX} Objective platform feedback extracted`, {
+        type: result.resultType,
+        feedbackLength: result.platformFeedback.length,
+      });
+      result.aiFeedback = (await createObjectiveFeedback(result)) || undefined;
+    }
+
+    // Store the platform score and constructive feedback
     await storeObjectiveResult(result);
 
     return { success: true, band: result.platformBand };
@@ -178,17 +239,43 @@ async function handleHistoricalScores(scores: any): Promise<any> {
   }
 }
 
+async function handleRescoreTestSkill(payload: {
+  testId: string;
+  skill: "writing" | "speaking";
+}): Promise<any> {
+  if (!payload?.testId || !payload?.skill) {
+    return { success: false, error: "Missing testId or skill" };
+  }
+
+  console.log(`${LOG_PREFIX} Manual AI rescore requested`, payload);
+  const test = await clearTestAiSkillScore(payload.testId, payload.skill);
+  const reviewUrl = test?.reviewUrls[payload.skill];
+  if (!reviewUrl) return { success: false, error: "Review URL unavailable" };
+
+  await updateTestSkillStatus(payload.testId, payload.skill, "scoring");
+  chrome.tabs.create({ url: reviewUrl, active: false });
+  return { success: true };
+}
+
 async function handleHistoryTests(tests: IeltsTestScoreRow[]): Promise<any> {
   console.log(`${LOG_PREFIX} Processing grouped history tests`, tests.length);
   await storeHistoryTests(tests);
-  await startBatchScoring(tests);
+  const storedScores = await getCombinedScore();
+  await startBatchScoring(storedScores.tests || tests);
   return { success: true, tests: tests.length };
 }
 
 async function startBatchScoring(tests: IeltsTestScoreRow[]): Promise<void> {
   for (const test of tests) {
     for (const skill of ["writing", "speaking"] as const) {
-      if (test[skill] !== undefined || !test.reviewUrls[skill]) continue;
+      if (!test.reviewUrls[skill]) continue;
+      if (test[skill] !== undefined && test.aiDetails?.[skill]) {
+        console.log(`${LOG_PREFIX} Skipping cached ${skill} score`, {
+          testId: test.id,
+          band: test[skill],
+        });
+        continue;
+      }
       await updateTestSkillStatus(test.id, skill, "scoring");
       console.log(
         `${LOG_PREFIX} Opening ${skill} review for scoring`,
@@ -208,6 +295,15 @@ async function findTestByReviewUrl(
   return scores.tests?.find(
     (test) => normalizeUrl(test.reviewUrls[skill]) === normalizedUrl,
   );
+}
+
+function getCachedAiScore(
+  test: IeltsTestScoreRow | undefined,
+  skill: "writing" | "speaking",
+) {
+  const score = test?.aiDetails?.[skill];
+  if (!score || typeof score.overallBand !== "number") return undefined;
+  return score;
 }
 
 function normalizeUrl(url?: string): string {

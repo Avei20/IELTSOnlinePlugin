@@ -2,7 +2,9 @@
 import {
   WritingResult,
   SpeakingResult,
+  ObjectiveResult,
   AiIeltsScore,
+  ConstructiveFeedback,
   WritingTask1Bands,
   WritingTask2Bands,
   SpeakingBands,
@@ -129,6 +131,39 @@ export async function scoreSpeaking(
     return score;
   } catch (error) {
     console.error(`${LOG_PREFIX} Error scoring speaking:`, error);
+    return null;
+  }
+}
+
+export async function createObjectiveFeedback(
+  result: ObjectiveResult,
+): Promise<ConstructiveFeedback | null> {
+  if (!result.platformFeedback) return null;
+
+  const apiKey = await getApiKey();
+  if (!apiKey) {
+    console.error(
+      `${LOG_PREFIX} Gemini API key not found. Please set it in the extension popup.`,
+    );
+    return null;
+  }
+
+  try {
+    console.log(
+      `${LOG_PREFIX} Creating ${result.resultType} constructive feedback`,
+      {
+        band: result.platformBand,
+        feedbackLength: result.platformFeedback.length,
+      },
+    );
+    const response = await callGemini(
+      apiKey,
+      createObjectiveFeedbackPrompt(result),
+      getObjectiveFeedbackSchema(),
+    );
+    return parseConstructiveFeedback(response);
+  } catch (error) {
+    console.error(`${LOG_PREFIX} Error creating objective feedback:`, error);
     return null;
   }
 }
@@ -285,6 +320,26 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
   return btoa(binary);
 }
 
+function getObjectiveFeedbackSchema(): any {
+  return {
+    type: "OBJECT",
+    properties: {
+      strengths: stringArraySchema(),
+      weaknesses: stringArraySchema(),
+      corrections: stringArraySchema(),
+      actionPlan: stringArraySchema(),
+      confidence: { type: "NUMBER" },
+    },
+    required: [
+      "strengths",
+      "weaknesses",
+      "corrections",
+      "actionPlan",
+      "confidence",
+    ],
+  };
+}
+
 function getWritingResponseSchema(): any {
   return {
     type: "OBJECT",
@@ -381,6 +436,16 @@ function stringArraySchema(): any {
   return { type: "ARRAY", items: { type: "STRING" } };
 }
 
+function createObjectiveFeedbackPrompt(result: ObjectiveResult): string {
+  return `You are an IELTS coach. Convert this IELTS ${result.resultType} platform Band Score feedback into concise constructive training feedback.
+
+Band: ${result.platformBand}
+Raw score: ${result.rawScore || "Unavailable"}
+Platform feedback: ${result.platformFeedback}
+
+Return JSON only. Do not change the score. Keep strengths, weaknesses, corrections, and actionPlan to maximum 2 short strings each. Make the action plan specific and practical.`;
+}
+
 /**
  * Create prompt for writing scoring
  */
@@ -425,6 +490,19 @@ The user's audio recordings are attached in Part 1, Part 2, Part 3 order. Evalua
 Return JSON only. Score each criterion from 0 to 9 in 0.5 increments.
 Keep strengths, weaknesses, corrections, and actionPlan to maximum 2 short strings each.
 Confidence must be a number from 0 to 1.`;
+}
+
+function parseConstructiveFeedback(response: any): ConstructiveFeedback {
+  return {
+    strengths: Array.isArray(response.strengths) ? response.strengths : [],
+    weaknesses: Array.isArray(response.weaknesses) ? response.weaknesses : [],
+    corrections: Array.isArray(response.corrections)
+      ? response.corrections
+      : [],
+    actionPlan: Array.isArray(response.actionPlan) ? response.actionPlan : [],
+    confidence:
+      typeof response.confidence === "number" ? response.confidence : 0.5,
+  };
 }
 
 /**
