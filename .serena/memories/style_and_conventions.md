@@ -1,0 +1,15 @@
+# Style and conventions
+- Use TypeScript for extension code.
+- Prefer minimal, focused content-script scraping logic with typed normalized data objects.
+- Keep selectors resilient by combining stable URL patterns, semantic text labels, and DOM fallback extraction.
+- Do not hardcode API keys. Store Gemini API key via extension storage for personal use, or use a backend proxy for distributed use.
+- Do not call Gemini from page context. Use `chrome.runtime.sendMessage` from content scripts to a background service worker.
+- Keep AI prompts deterministic and IELTS-rubric-based.
+- Require Gemini structured JSON output and validate parsed results before using them.
+- Keep changes small and scoped. Do not add documentation files unless explicitly requested.
+- Scraper logs should be concise and prefixed with `[IELTSPlugin]`.
+- Prefer existing browser APIs and Chrome extension APIs before adding dependencies.
+- Use IELTS half-band rounding via `Math.round(score * 2) / 2`.
+- Writing score convention: Task 2 has double weight, `roundToNearestHalf((task1Band + task2Band * 2) / 3)`.
+- Speaking score convention: average the four public IELTS criteria, then round to nearest half.
+- Overall IELTS convention: average Listening, Reading, Writing, Speaking, then round to nearest half.

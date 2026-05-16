@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "IELTS Plugin",
+  "version": "1.0.0",
+  "description": "Extract IELTS practice test data and provide AI-powered scoring and feedback",
+  "permissions": ["storage", "activeTab", "tabs"],
+  "host_permissions": [
+    "https://ieltsonlinetests.com/*",
+    "https://cdn1.ieltsonlinetests.com/*"
+  ],
+  "background": {
+    "service_worker": "src/background/service-worker.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://ieltsonlinetests.com/*"],
+      "js": ["src/content/contentScript.js"]
+    }
+  ],
+  "action": {
+    "default_popup": "src/popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

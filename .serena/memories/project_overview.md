@@ -1,0 +1,19 @@
+# Project overview
+- Project: IELTSPlugin.
+- Purpose: Google Chrome Extension for IELTS Online Tests that extracts practice-test history and result-page data, fills missing Writing/Speaking scoring with Gemini AI, and combines those AI scores with platform Reading/Listening scores for IELTS training.
+- Main target site: `https://ieltsonlinetests.com/`.
+- Key target pages:
+  - Practice history: `https://ieltsonlinetests.com/account/practice-test-history`.
+  - Writing result example: `https://ieltsonlinetests.com/wot/result/writing-practice-test-1-2903539`.
+- Confirmed Writing result extraction from example page:
+  - Task 1 question: ethanol fuel production from corn process diagram; minimum 150 words.
+  - Task 1 answer: user essay describing storing corn, milling, cooking 4 hours, fermenting 48 hours, separating liquid/solid by-product, purifying ethanol 5 hours, storing/transporting.
+  - Task 2 question: physical strength vs mental strength for success in sport; discuss both views and give opinion; minimum 250 words.
+  - Task 2 answer: user essay arguing both matter, with stronger emphasis on mental strength in competition.
+- Current repository state when last inspected: only `manifest.json` and `.serena`; `manifest.json` is empty.
+- Language configured by Serena: TypeScript.
+- Preferred architecture:
+  - Content scripts scrape IELTS Online Tests pages.
+  - Background service worker calls Gemini and combines scores.
+  - Popup/dashboard displays extracted attempts, AI feedback, and combined IELTS score.
+- Do not commit or hardcode Gemini API keys.
